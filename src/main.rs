@@ -1,4 +1,4 @@
-use std::cell::{Ref, RefCell};
+use std::cell::{RefCell};
 use std::cmp::PartialEq;
 use std::fs::File;
 use std::io;
@@ -13,7 +13,7 @@ fn main() {
     if REPL_MODE {
         repl();
     } else {
-        execute_file("test.ls");
+        execute_file("test.scm");
     }
 }
 
