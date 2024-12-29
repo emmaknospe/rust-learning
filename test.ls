@@ -1,0 +1,1 @@
+(if 1 (cons (car (quote 12, 2, 3, ("a string", 5))) (quote 2)) 3)

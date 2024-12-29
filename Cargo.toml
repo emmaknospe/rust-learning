@@ -1,0 +1,8 @@
+[package]
+name = "rust-learning"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+inventory = "0.3.16"
+rand = "0.8.5"
