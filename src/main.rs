@@ -492,9 +492,11 @@ fn display_tree(node: Rc<RefCell<Node>>) {
                 if cdr.borrow().is_list() {
                     display_tree(cdr.clone());
                     Some(cdr)
-                } else {
+                } else if !cdr.borrow().is_null() {
                     print!(" . ");
                     display_tree(cdr.clone());
+                    Some(cdr)
+                } else {
                     Some(cdr)
                 }
             }
