@@ -38,18 +38,18 @@ fn repl() {
 }
 
 
-fn build_root_namespace() -> Rc<RefCell<Namespace>> {
-    let namespace = Rc::new(RefCell::new(Namespace {
+fn build_root_stackframe() -> Rc<RefCell<StackFrame>> {
+    let stackframe = Rc::new(RefCell::new(StackFrame {
         parent: None,
         names: Vec::new(),
     }));
     // add to names
-    namespace.borrow_mut().names.push(VariableDefinition {
+    stackframe.borrow_mut().names.push(VariableDefinition {
         name: "nil".to_string(),
         value: Rc::new(RefCell::new(Node::new())),
     });
     for item in inventory::iter::<BuiltinLispFunction> {
-        namespace.borrow_mut().names.push(VariableDefinition {
+        stackframe.borrow_mut().names.push(VariableDefinition {
             name: item.name.to_string(),
             value: Rc::new(RefCell::new(Node {
                 car: None,
@@ -62,14 +62,12 @@ fn build_root_namespace() -> Rc<RefCell<Namespace>> {
                         float_value: None,
                         lambda_value: None,
                         builtin_value: Some(item.clone()),
-                        line_number: None,
-                        col_number: None,
                     }
                 ),
             })),
         });
     }
-    namespace
+    stackframe
 }
 
 fn execute(data: &mut impl BufRead) {
@@ -79,13 +77,13 @@ fn execute(data: &mut impl BufRead) {
 
     // parse tokens
     let root_node = parse_2(tokens).expect("failed to parse");
-    if !is_valid(root_node.clone()) {
+    if !root_node.borrow().is_valid() {
         println!("Error: invalid parse tree");
         std::process::exit(1);
     }
-    let root_namespace = build_root_namespace();
+    let root_stackframe = build_root_stackframe();
 
-    display_tree(evaluate_each(root_namespace, root_node).expect("failed to evaluate"));
+    display_tree(evaluate_each(root_stackframe, root_node).expect("failed to evaluate"));
 }
 
 #[derive(Debug)]
@@ -130,6 +128,7 @@ enum ValueType {
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
 struct Value {
     value_type: ValueType,
     string_value: Option<String>,
@@ -137,8 +136,6 @@ struct Value {
     float_value: Option<f32>,
     lambda_value: Option<Lambda>,
     builtin_value: Option<BuiltinLispFunction>,
-    line_number: Option<u32>,
-    col_number: Option<u32>
 }
 
 impl PartialEq for Value {
@@ -147,14 +144,13 @@ impl PartialEq for Value {
             self.string_value == other.string_value &&
             self.int_value == other.int_value &&
             self.float_value == other.float_value &&
-            self.line_number == other.line_number &&
             self.value_type != ValueType::Lambda
     }
 }
 
 
 impl Value {
-    fn from_string(string: String, line_number: Option<u32>, col_number: Option<u32>) -> Value {
+    fn from_string(string: String) -> Value {
         Value {
             value_type: ValueType::String,
             string_value: Some(string),
@@ -162,11 +158,9 @@ impl Value {
             float_value: None,
             lambda_value: None,
             builtin_value: None,
-            line_number,
-            col_number,
         }
     }
-    fn from_int(int: i32, line_number: Option<u32>, col_number: Option<u32>) -> Value {
+    fn from_int(int: i32) -> Value {
         Value {
             value_type: ValueType::Integer,
             string_value: None,
@@ -174,11 +168,9 @@ impl Value {
             float_value: None,
             lambda_value: None,
             builtin_value: None,
-            line_number,
-            col_number,
         }
     }
-    fn from_float(float: f32, line_number: Option<u32>, col_number: Option<u32>) -> Value {
+    fn from_float(float: f32) -> Value {
         Value {
             value_type: ValueType::Float,
             string_value: None,
@@ -186,11 +178,9 @@ impl Value {
             float_value: Some(float),
             lambda_value: None,
             builtin_value: None,
-            line_number,
-            col_number,
         }
     }
-    fn from_symbol(symbol: String, line_number: Option<u32>, col_number: Option<u32>) -> Value {
+    fn from_symbol(symbol: String) -> Value {
         Value {
             value_type: ValueType::Symbol,
             string_value: Some(symbol),
@@ -198,8 +188,6 @@ impl Value {
             float_value: None,
             lambda_value: None,
             builtin_value: None,
-            line_number,
-            col_number,
         }
     }
 }
@@ -216,16 +204,16 @@ fn make_value_from_token(token: Token) -> Result<Value, String> {
     };
     match value_type {
         ValueType::Symbol => {
-            Ok(Value::from_symbol(token.text.unwrap(), Some(token.line_num), Some(token.col_num)))
+            Ok(Value::from_symbol(token.text.unwrap()))
         }
         ValueType::String => {
-            Ok(Value::from_string(token.text.unwrap(), Some(token.line_num), Some(token.col_num)))
+            Ok(Value::from_string(token.text.unwrap()))
         }
         ValueType::Integer => {
-            Ok(Value::from_int(token.text.unwrap().parse::<i32>().unwrap(), Some(token.line_num), Some(token.col_num)))
+            Ok(Value::from_int(token.text.unwrap().parse::<i32>().unwrap()))
         }
         ValueType::Float => {
-            Ok(Value::from_float(token.text.unwrap().parse::<f32>().unwrap(), Some(token.line_num), Some(token.col_num)))
+            Ok(Value::from_float(token.text.unwrap().parse::<f32>().unwrap()))
         }
         _ => {
             Err("invalid value type".to_string())
@@ -320,14 +308,14 @@ fn tokenize(data: &mut impl BufRead, final_tokens: &mut Vec<Token>) -> Result<St
 fn close_symbol_int_float(final_tokens: &mut Vec<Token>, line_num: u32, cur_symbol: &mut String, col_num: u32) -> Result<String, String> {
     // close any open symbols, ints, or floats
     if cur_symbol.len() > 0 {
-        if let Ok(int_val) = cur_symbol.parse::<i32>() {
+        if let Ok(_int_val) = cur_symbol.parse::<i32>() {
             final_tokens.push(Token {
                 text: Some(cur_symbol.clone()),
                 token_type: TokenType::Integer,
                 line_num: line_num,
                 col_num: col_num,
             });
-        } else if let Ok(float_val) = cur_symbol.parse::<f32>() {
+        } else if let Ok(_float_val) = cur_symbol.parse::<f32>() {
             final_tokens.push(Token {
                 text: Some(cur_symbol.clone()),
                 token_type: TokenType::Float,
@@ -376,13 +364,11 @@ fn close_symbol_int_float(final_tokens: &mut Vec<Token>, line_num: u32, cur_symb
 }
 
 #[derive(Debug)]
-struct Node {
+pub struct Node {
     car: Option<Rc<RefCell<Node>>>,
     cdr: Option<Rc<RefCell<Node>>>,
     value: Option<Value>,
 }
-
-
 
 
 impl PartialEq for Node {
@@ -399,25 +385,39 @@ impl Node {
             value: None,
         }
     }
-}
-
-
-fn debug_disp_node(node: Rc<RefCell<Node>>) {
-    print!("{{");
-    let borrowed = node.borrow();
-    if borrowed.value.is_some() {
-        let value = borrowed.value.as_ref().unwrap();
-        print!("value: {:?}", value);
+    fn car(&self) -> Option<Rc<RefCell<Node>>> {
+        self.car.clone()
     }
-    if borrowed.car.is_some() {
-        print!("car: ");
-        debug_disp_node(borrowed.car.as_ref().unwrap().clone());
+    fn cdr(&self) -> Option<Rc<RefCell<Node>>> {
+        self.cdr.clone()
     }
-    if node.borrow().cdr.is_some() {
-        print!("cdr: ");
-        debug_disp_node(borrowed.cdr.as_ref().unwrap().clone());
+    fn is_value(&self) -> bool {
+        self.value.is_some()
     }
-    print!("}}");
+    fn is_list(&self) -> bool {
+        self.car.is_some() && self.cdr.is_some()
+    }
+    fn is_null(&self) -> bool {
+        !self.car.is_some() && !self.value.is_some() && !self.cdr.is_some()
+    }
+    fn is_valid(&self) -> bool {
+        if self.is_value() {
+            return true;
+        }
+        if self.is_list() {
+            return self.car.as_ref().unwrap().borrow().is_valid() && self.cdr.as_ref().unwrap().borrow().is_valid();
+        }
+        if self.is_null() {
+            return true;
+        }
+        println!("Error: invalid node");
+        print!("invalid node: {:?}", self);
+        println!();
+        false
+    }
+    fn value(&self) -> Option<Value> {
+        self.value.clone()
+    }
 }
 
 
@@ -457,43 +457,14 @@ fn parse_2(tokens: Vec<Token>) -> Result<Rc<RefCell<Node>>, String> {
     Ok(cur_node)
 }
 
-fn is_value(node: Rc<RefCell<Node>>) -> bool {
-    node.borrow().value.is_some()
-}
-
-fn is_list(node: Rc<RefCell<Node>>) -> bool {
-    node.borrow().car.is_some() && node.borrow().cdr.is_some()
-}
-
-fn is_null(node: Rc<RefCell<Node>>) -> bool {
-    !node.borrow().car.is_some() && !node.borrow().value.is_some() && !node.borrow().cdr.is_some()
-}
-
-fn is_valid(node: Rc<RefCell<Node>>) -> bool {
-    if is_value(node.clone()) {
-        return true;
-    }
-    if is_list(node.clone()) {
-        return is_valid(car(&node).unwrap()) && is_valid(cdr(&node).unwrap());
-    }
-    if is_null(node.clone()) {
-        return true;
-    }
-    println!("Error: invalid node");
-    print!("invalid node: ");
-    debug_disp_node(node.clone());
-    println!();
-    false
-}
 
 
 fn display_tree(node: Rc<RefCell<Node>>) {
-    if is_null(node.clone()) {
+    if node.borrow().is_null() {
         return;
     }
-    if is_value(node.clone()) {
-        let borrowed = node.borrow();
-        let value = borrowed.value.as_ref().unwrap();
+    if node.borrow().is_value() {
+        let value = node.borrow().value().unwrap();
         match value.value_type {
             ValueType::Symbol => { print!("{} ", value.string_value.as_ref().unwrap()); },
             ValueType::String => { print!("\"{}\" ", value.string_value.as_ref().unwrap()); },
@@ -503,37 +474,47 @@ fn display_tree(node: Rc<RefCell<Node>>) {
             _ => { println!("\n Error: invalid token {:?}", value); std::process::exit(1); },
         }
     } else {
-        if node.borrow().car.is_some() {
-            if is_list(node.borrow().car.as_ref().unwrap().clone()) {
-                print!("(");
-                display_tree(node.borrow().car.as_ref().unwrap().clone());
-                print!(")");
-            } else {
-                display_tree(node.borrow().car.as_ref().unwrap().clone());
+        node.borrow().car().and_then(
+            |car| {
+                if car.borrow().is_list() {
+                    print!("(");
+                    display_tree(car.clone());
+                    print!(")");
+                    Some(car)
+                } else {
+                    display_tree(car.clone());
+                    Some(car)
+                }
             }
-        }
-        if node.borrow().cdr.is_some() {
-            if !node.borrow().car.is_some() {
-                print!("weirdcar");
+        );
+        node.borrow().cdr().and_then(
+            |cdr| {
+                if cdr.borrow().is_list() {
+                    display_tree(cdr.clone());
+                    Some(cdr)
+                } else {
+                    print!(" . ");
+                    display_tree(cdr.clone());
+                    Some(cdr)
+                }
             }
-            display_tree(node.borrow().cdr.as_ref().unwrap().clone());
-        }
+        );
     }
 }
 
-fn evaluate_each(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_each(stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let mut new_node = Rc::new(RefCell::new(Node::new()));
-    if is_null(node.clone()) {
+    if node.borrow().is_null() {
         return Ok(new_node);
     }
-    if is_value(node.clone()) {
+    if node.borrow().is_value() {
         return Err("invalid list of nodes".to_string());
     }
-    if is_list(node.clone()) {
+    if node.borrow().is_list() {
         let car = node.borrow().car.as_ref().unwrap().clone();
         let cdr = node.borrow().cdr.as_ref().unwrap().clone();
-        let new_car = evaluate(namespace.clone(), car)?;
-        let new_cdr = evaluate_each(namespace, cdr)?;
+        let new_car = evaluate(stackframe.clone(), car)?;
+        let new_cdr = evaluate_each(stackframe, cdr)?;
         new_node = Rc::new(RefCell::new(Node {
             car: Some(new_car.clone()),
             cdr: Some(new_cdr.clone()),
@@ -573,7 +554,7 @@ fn value_float(node: Rc<RefCell<Node>>) -> f32 {
 #[derive(Clone)]
 pub struct BuiltinLispFunction {
     pub name: &'static str,
-    pub func: fn(Rc<RefCell<Namespace>>, Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String>,
+    pub func: fn(Rc<RefCell<StackFrame>>, Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String>,
     pub lazy: bool,
 }
 
@@ -585,14 +566,14 @@ struct VariableDefinition {
     value: Rc<RefCell<Node>>,
 }
 
-struct Namespace {
-    parent: Option<Rc<RefCell<Namespace>>>,
+pub struct StackFrame {
+    parent: Option<Rc<RefCell<StackFrame>>>,
     names: Vec<VariableDefinition>,
 }
 
 
-fn lookup(namespace: Rc<RefCell<Namespace>>, name: &str) -> Option<Rc<RefCell<Node>>> {
-    let borrowed = namespace.borrow();
+fn lookup(stackframe: Rc<RefCell<StackFrame>>, name: &str) -> Option<Rc<RefCell<Node>>> {
+    let borrowed = stackframe.borrow();
     for item in borrowed.names.iter() {
         if item.name == name {
             return Some(item.value.clone());
@@ -604,7 +585,7 @@ fn lookup(namespace: Rc<RefCell<Namespace>>, name: &str) -> Option<Rc<RefCell<No
     None
 }
 
-fn evaluate(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate(stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     if DEBUG {
         println!("#######################");
         println!("evaluate on node");
@@ -612,34 +593,38 @@ fn evaluate(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Resul
         println!();
         println!("#######################");
     }
-    if is_value(node.clone()) {
-        if value_type(node.clone()) == ValueType::Symbol {
+    if node.borrow().is_value() {
+        return if value_type(node.clone()) == ValueType::Symbol {
             let text = value_text(node.clone());
-            return lookup(namespace, &text).ok_or(format!("undefined symbol '{}'", text));
+            lookup(stackframe, &text).ok_or(format!("undefined symbol '{}'", text))
         } else if value_type(node.clone()) == ValueType::Integer {
-            return Ok(node);
+            Ok(node)
         } else if value_type(node.clone()) == ValueType::Float {
-            return Ok(node);
+            Ok(node)
         } else if value_type(node.clone()) == ValueType::String {
-            return Ok(node);
+            Ok(node)
+        } else {
+            Err("invalid value".to_string())
         }
     }
-    let operation = evaluate(namespace.clone(), car(&node)?)?;
+    let operation = evaluate(stackframe.clone(), car(&node)?)?;
     let args = cdr(&node)?;
-    if !is_value(operation.clone()) {
+    if !operation.borrow().is_value() {
+        println!("Error: invalid operation");
+        display_tree(operation.clone());
         return Err("invalid operation: not a value".to_string());
     }
     let borrowed = operation.borrow();
     let operation_value = borrowed.value.as_ref().unwrap();
     if operation_value.value_type == ValueType::Lambda {
-        apply_lambda(namespace.clone(), operation_value.lambda_value.as_ref().unwrap(), args)
+        apply_lambda(stackframe.clone(), operation_value.lambda_value.as_ref().unwrap(), args)
     } else if operation_value.value_type == ValueType::BuiltIn {
         let builtin = operation_value.builtin_value.as_ref().unwrap();
         // evaluate args if not lazy
         if !builtin.lazy {
-            return (builtin.func)(namespace.clone(), evaluate_each(namespace, args)?);
+            return (builtin.func)(stackframe.clone(), evaluate_each(stackframe, args)?);
         } else {
-            return (builtin.func)(namespace, args);
+            return (builtin.func)(stackframe, args);
         }
     } else {
         return Err("invalid operation: not a function".to_string());
@@ -647,32 +632,32 @@ fn evaluate(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Resul
 }
 
 
-fn apply_lambda(namespace: Rc<RefCell<Namespace>>, lambda: &Lambda, args: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
-    let mut new_namespace = Rc::new(RefCell::new(Namespace {
-        parent: Some(namespace.clone()),
+fn apply_lambda(stackframe: Rc<RefCell<StackFrame>>, lambda: &Lambda, args: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+    let new_stackframe = Rc::new(RefCell::new(StackFrame {
+        parent: Some(stackframe.clone()),
         names: Vec::new(),
     }));
     let mut args_node = args.clone();
     for param in lambda.params.iter() {
-        if is_null(args_node.clone()) {
+        if args_node.borrow().is_null() {
             return Err("not enough arguments".to_string());
         }
-        let arg = evaluate(namespace.clone(), car(&args_node)?)?;
-        new_namespace.borrow_mut().names.push(VariableDefinition {
+        let arg = evaluate(stackframe.clone(), car(&args_node)?)?;
+        new_stackframe.borrow_mut().names.push(VariableDefinition {
             name: param.clone(),
             value: arg.clone(),
         });
         args_node = cdr(&args_node)?;
     }
-    if !is_null(args_node.clone()) {
+    if !args_node.borrow().is_null() {
         return Err("too many arguments".to_string());
     }
-    evaluate(new_namespace, lambda.body.clone())
+    evaluate(new_stackframe, lambda.body.clone())
 }
 
-fn evaluate_car(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_car(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let arg1 = car(&node)?;
-    if !is_list(arg1.clone()) {
+    if !arg1.borrow().is_list() {
         return Err("invalid argument to car".to_string());
     }
     let car = car(&arg1)?;
@@ -687,9 +672,9 @@ inventory::submit! {
     }
 }
 
-fn evaluate_cdr(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_cdr(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let arg1 = car(&node)?;
-    if !is_list(arg1.clone()) {
+    if !arg1.borrow().is_list() {
         return Err("invalid argument to cdr".to_string());
     }
     let cdr = cdr(&arg1)?;
@@ -705,7 +690,7 @@ inventory::submit! {
     }
 }
 
-fn evaluate_cons(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_cons(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let arg1 = car(&node)?;
     let arg2 = car(&cdr(&node)?)?;
     Ok(Rc::new(RefCell::new(Node {
@@ -725,12 +710,12 @@ inventory::submit! {
 }
 
 
-fn evaluate_add(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_add(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let mut accumulator_int = 0;
     let mut accumulator_float = 0.0;
     let mut is_float = false;
     let mut node = node.clone();
-    while !is_null(node.clone()) {
+    while !node.borrow().is_null() {
         let arg = car(&node)?;
         if value_type(arg.clone()) == ValueType::Integer {
             accumulator_int += value_int(arg.clone());
@@ -762,12 +747,12 @@ inventory::submit! {
 }
 
 
-fn evaluate_multiply(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_multiply(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let mut accumulator_int = 1;
     let mut accumulator_float = 1.0;
     let mut is_float = false;
     let mut node = node.clone();
-    while !is_null(node.clone()) {
+    while !node.borrow().is_null() {
         let arg = car(&node)?;
         if value_type(arg.clone()) == ValueType::Integer {
             accumulator_int *= value_int(arg.clone());
@@ -798,11 +783,11 @@ inventory::submit! {
     }
 }
 
-fn evaluate_lambda(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_lambda(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let params = car(&node)?;
     let mut params_vec = Vec::new();
     let mut params_node = params.clone();
-    while !is_null(params_node.clone()) {
+    while !params_node.borrow().is_null() {
         let param = car(&params_node)?;
         if value_type(param.clone()) != ValueType::Symbol {
             return Err("invalid lambda parameter".to_string());
@@ -825,8 +810,6 @@ fn evaluate_lambda(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -
                 string_value: None,
                 int_value: None,
                 float_value: None,
-                line_number: None,
-                col_number: None,
             }
         ),
     })))
@@ -846,12 +829,12 @@ fn build_int_node(accumulator_int: i32) -> Result<Rc<RefCell<Node>>, String> {
         car: None,
         cdr: None,
         value: Some(
-            Value::from_int(accumulator_int, None, None)
+            Value::from_int(accumulator_int)
         ),
     })))
 }
 
-fn evaluate_subtract(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_subtract(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let mut accumulator_int = 0;
     let mut accumulator_float = 0.0;
     let mut is_float = false;
@@ -866,7 +849,7 @@ fn evaluate_subtract(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>)
         return Err("invalid argument to -".to_string());
     }
     node = cdr(&node)?;
-    while !is_null(node.clone()) {
+    while !node.borrow().is_null() {
         let arg = car(&node)?;
         if value_type(arg.clone()) == ValueType::Integer {
             accumulator_int -= value_int(arg.clone());
@@ -898,7 +881,7 @@ inventory::submit! {
 }
 
 
-fn evaluate_divide(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_divide(_stackframe: Rc<RefCell<StackFrame>>, node: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     // division always returns a float
     let mut accumulator_float;
     let mut node = node.clone();
@@ -911,7 +894,7 @@ fn evaluate_divide(namespace: Rc<RefCell<Namespace>>, node: Rc<RefCell<Node>>) -
         return Err("invalid argument to /".to_string());
     }
     node = cdr(&node)?;
-    while !is_null(node.clone()) {
+    while !node.borrow().is_null() {
         let arg = car(&node)?;
         if value_type(arg.clone()) == ValueType::Integer {
             accumulator_float /= value_int(arg.clone()) as f32;
@@ -942,16 +925,16 @@ fn build_float_node(float: f32) -> Result<Rc<RefCell<Node>>, String> {
         car: None,
         cdr: None,
         value: Some(
-            Value::from_float(float, None, None)
+            Value::from_float(float)
         ),
     })))
 }
 
 fn is_truthy(node: Rc<RefCell<Node>>) -> bool {
-    if is_null(node.clone()) {
+    if node.borrow().is_null() {
         return false;
     }
-    if is_value(node.clone()) {
+    if node.borrow().is_value() {
         let borrowed = node.borrow();
         let value = borrowed.value.as_ref().unwrap();
         match value.value_type {
@@ -963,22 +946,22 @@ fn is_truthy(node: Rc<RefCell<Node>>) -> bool {
             _ => { println!("\n Error: invalid token {:?}", value); std::process::exit(1); },
         }
     }
-    if is_list(node.clone()) {
+    if node.borrow().is_list() {
         return true;
     }
     false
 }
 
 
-fn evaluate_if(namespace: Rc<RefCell<Namespace>>, args: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
+fn evaluate_if(stackframe: Rc<RefCell<StackFrame>>, args: Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
     let condition = car(&args)?;
     let if_true = car(&cdr(&args)?)?;
     let if_false = car(&cdr(&cdr(&args)?)?)?;
-    let condition_evaluated = evaluate(namespace.clone(), condition)?;
+    let condition_evaluated = evaluate(stackframe.clone(), condition)?;
     if is_truthy(condition_evaluated.clone()) {
-        return Ok(evaluate(namespace, if_true)?);
+        return Ok(evaluate(stackframe, if_true)?);
     }
-    Ok(evaluate(namespace, if_false)?)
+    Ok(evaluate(stackframe, if_false)?)
 }
 
 
@@ -1003,37 +986,3 @@ fn car(args: &Rc<RefCell<Node>>) -> Result<Rc<RefCell<Node>>, String> {
         |car| Ok(car.clone())
     )
 }
-//fn secret_num() {
-//    println!("guess number");
-//
-//    let secret_number = rand::thread_rng().gen_range(1..=100);
-//
-//    loop {
-//        println!("input now");
-//
-//        let mut guess = String::new();
-//
-//        io::stdin()
-//            .read_line(&mut guess)
-//            .expect("failed to read line");
-//
-//        let guess: u32 = match guess.trim().parse() {
-//            Ok(num) => num,
-//            Err(_) => {
-//                println!("please input a number");
-//                continue;
-//            }
-//        };
-//
-//        println!("you guessed: {guess}");
-//
-//        match guess.cmp(&secret_number) {
-//            Ordering::Less => println!("too small"),
-//            Ordering::Greater => println!("too big"),
-//            Ordering::Equal => {
-//                println!("you win");
-//                break;
-//            },
-//        }
-//    }
-//}
